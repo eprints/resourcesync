@@ -1,0 +1,92 @@
+#!/usr/bin/perl -I/opt/eprints3/perl_lib
+
+use strict;
+use warnings;
+
+use EPrints;
+use Digest::MD5 qw(md5 md5_hex md5_base64);
+use Encode;
+
+my $repositoryid = shift;
+
+die "generate_sitemap (resourcesync) *repositoryid*\n" unless $repositoryid;
+
+my $ep = EPrints->new;
+my $repo = $ep->repository($repositoryid);
+
+die "Could not load $repositoryid repository\n" unless $repo;
+
+my $xml = $repo->xml;
+
+my $urlset = $xml->create_element( "urlset", xmlns => "http://www.sitemaps.org/schemas/sitemap/0.9", 'xmlns:rs' => "http://www.openarchives.org/rs/terms/" );
+
+#add timestamp
+my $time = EPrints::Time::iso_datetime();
+my $md = $xml->create_element( "rs:md", capability => "resourcelist", at => $time );
+$urlset->appendChild( $md );
+
+
+my $ds = $repo->dataset( "archive" );
+my $eprints = $ds->search;
+
+my @opts = ( $urlset, $xml );
+
+$eprints->map( \&add_url, \@opts );
+
+open ( my $fh, ">:encoding(UTF-8)", $EPrints::SystemSettings::conf->{base_path} . "/archives/$repositoryid/cfg/static/resourcesync.xml" );
+
+print $fh "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n";
+print $fh $xml->to_string( $urlset );
+
+close $fh;
+
+exit 0;
+
+sub add_url 
+{
+	my ( $session, $dataset, $eprint, $opts ) = @_;
+
+	my ( $urlset, $xml ) = @{$opts};
+
+	#we want a sitemap of XML exports
+	my $plugin_id = "Export::XML";
+        my $plugin = $session->plugin( $plugin_id );
+
+	my $loc = $xml->create_element( "loc" );
+	$loc->appendChild( $xml->create_text_node( $plugin->dataobj_export_url( $eprint ) ) );
+
+	my $changefreq = $xml->create_element( "changefreq" );
+	$changefreq->appendChild( $xml->create_text_node( "weekly" ) );
+	
+	#rs:md - hash, length and type
+	my $content = $plugin->output_dataobj( $eprint );	
+	my $hash = md5_hex( utf8::is_utf8($content) ? Encode::encode_utf8($content) : $content );
+
+	use bytes;
+	my $length = length( $content );
+
+	my $md = $xml->create_element( "rs:md", 
+		hash => $hash,
+		length => $length,
+		type => $plugin->{mimetype},
+	);
+	
+	#rs:ln - add link to the abstract page
+	my $ln = $xml->create_element( "rs:ln",
+		rel => "describes",
+		type => "text/html",
+		href => $eprint->url_stem,
+	);
+
+	my $url =  $xml->create_element( "url" );
+	$url->appendChild( $loc );
+	$url->appendChild( $changefreq );
+	$url->appendChild( $md );
+	$url->appendChild( $ln );
+
+	$urlset->appendChild( $url );
+}
+
+close $fh;
+
+exit 0;
